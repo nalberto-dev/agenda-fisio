@@ -1,0 +1,372 @@
+(function(){
+"use strict";
+/* Confere se o index.html é o que combina com este app.js (evita erros por arquivos de versões misturadas). */
+var need=["auth","authform","app","modal","toast","view","scroll","fab","setup","who","ttl","acts","greet","back-slot","btn-out-d","pw","em","pwbox","auth-go","auth-sw","auth-forgot","auth-msg","namebox","nm"],
+    miss=need.filter(function(i){return !document.getElementById(i)});
+if(miss.length){var bb=document.getElementById("boot");
+ if(bb){bb.hidden=false;bb.innerHTML="<b>O index.html não combina com o app.js</b><br><small>Faltam no index.html: "+miss.join(", ")+". Use todos os arquivos do <b>minha-agenda.zip</b> mais recente (index.html, css e js juntos).</small>"}
+ return}
+var $=function(i){return document.getElementById(i)};
+var esc=function(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})};
+var pad=function(n){return(n<10?"0":"")+n};
+var isoOf=function(d){return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())};
+var parse=function(s){var a=s.split("-");return new Date(+a[0],+a[1]-1,+a[2])};
+var todayISO=function(){return isoOf(new Date())};
+var hm=function(t){return String(t).slice(0,5)};
+var mins=function(t){var a=String(t).split(":");return +a[0]*60+ +a[1]};
+var fmtMin=function(x){x=(x+1440)%1440;return pad(Math.floor(x/60))+":"+pad(x%60)};
+var MN=["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
+var WDL=["domingo","segunda-feira","terça-feira","quarta-feira","quinta-feira","sexta-feira","sábado"];
+var WD=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+var cap=function(s){return s.charAt(0).toUpperCase()+s.slice(1)};
+var dmy=function(s){var d=parse(s);return pad(d.getDate())+"/"+pad(d.getMonth()+1)};
+var dfull=function(s){var d=parse(s);return cap(WDL[d.getDay()])+", "+d.getDate()+" de "+MN[d.getMonth()]};
+var ic=function(n){return '<svg class="i"><use href="#'+n+'"/></svg>'};
+var money=function(v){return "R$ "+Number(v||0).toLocaleString("pt-BR",{minimumFractionDigits:0,maximumFractionDigits:2})};
+var initials=function(n){var w=n.trim().split(/\s+/);return(w[0].charAt(0)+(w.length>1?w[w.length-1].charAt(0):"")).toUpperCase()};
+var LAB={realizado:"Realizada",cancelado:"Cancelada",remarcado:"Remarcada",agendado:"Agendada"};
+
+var S={user:null,name:"",pts:[],ap:[],view:"agenda",pid:null,day:todayISO(),cm:null,filt:"all",q:"",notified:{}};
+S.cm=new Date(parse(S.day).getFullYear(),parse(S.day).getMonth(),1);
+var sb=null,started=false;
+
+var getP=function(id){return S.pts.filter(function(p){return p.id===id})[0]};
+var getA=function(id){return S.ap.filter(function(a){return a.id===id})[0]};
+var cmpA=function(a,b){return a.date.localeCompare(b.date)||a.time.localeCompare(b.time)};
+var doneOf=function(pid){return S.ap.filter(function(a){return a.patient_id===pid&&a.status==="realizado"}).sort(cmpA)};
+var okc=function(pid){return doneOf(pid).length};
+var nextOf=function(pid){return S.ap.filter(function(a){return a.patient_id===pid&&a.status==="agendado"}).sort(cmpA)[0]};
+var sessNo=function(a){return doneOf(a.patient_id).map(function(x){return x.id}).indexOf(a.id)+1};
+var whenTxt=function(a){if(!a)return"Sem agendamento";var t=todayISO(),tm=isoOf(new Date(Date.now()+864e5));
+ return(a.date===t?"Hoje":a.date===tm?"Amanhã":WD[parse(a.date).getDay()])+" ("+dmy(a.date)+") · "+hm(a.time)};
+
+var tt=null;
+function toast(m,ms){var e=$("toast");e.textContent=m;e.classList.add("show");clearTimeout(tt);tt=setTimeout(function(){e.classList.remove("show")},ms||2600)}
+function errMsg(e){return(e&&e.message)?e.message:"Erro inesperado."}
+
+/* ---------------- modal helpers ---------------- */
+function modal(html){$("modal").innerHTML='<div class="box"><div class="grip"></div>'+html+'</div>';$("modal").classList.add("on")}
+function closeModal(){$("modal").classList.remove("on");$("modal").innerHTML=""}
+$("modal").addEventListener("click",function(e){if(e.target===$("modal"))closeModal()});
+document.addEventListener("keydown",function(e){if(e.key==="Escape")closeModal()});
+function confirmBox(title,text,label,fn){
+ modal('<div class="row"><b>'+esc(title)+'</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+'</button></div><div class="mute">'+esc(text)+'</div><button class="btn danger" id="cf-yes">'+esc(label)+'</button><button class="btn sec" data-close>Voltar</button>');
+ $("cf-yes").onclick=function(){this.disabled=true;Promise.resolve(fn()).then(closeModal).catch(function(e){toast(errMsg(e));closeModal()})}}
+
+/* ---------------- data ---------------- */
+async function load(){
+ var r=await Promise.all([sb.from("patients").select("*").order("name"),sb.from("appointments").select("*").order("date").order("time")]);
+ if(r[0].error)throw r[0].error;if(r[1].error)throw r[1].error;
+ S.pts=r[0].data;S.ap=r[1].data.map(function(a){a.time=hm(a.time);return a});
+}
+async function run(p,okMsg){try{var r=await p;if(r&&r.error)throw r.error;await load();render();if(okMsg)toast(okMsg);return r}catch(e){toast("Erro: "+errMsg(e),4000);return null}}
+
+/* ---------------- auth ---------------- */
+var mode="login";
+function authMode(m){mode=m;var l=m==="login",c=m==="signup",f=m==="forgot";
+ $("pwbox").hidden=f;$("namebox").hidden=!c;$("pw").autocomplete=c?"new-password":"current-password";
+ $("auth-go").textContent=l?"Entrar":c?"Criar conta":"Enviar link de recuperação";
+ $("auth-sw").textContent=l?"Criar conta":"Já tenho conta";$("auth-forgot").hidden=!l;$("auth-msg").hidden=true}
+function amsg(t,k){var m=$("auth-msg");m.className="hint "+(k||"err");m.textContent=t;m.hidden=false}
+$("auth-sw").onclick=function(){authMode(mode==="login"?"signup":"login")};
+$("auth-forgot").onclick=function(){authMode("forgot")};
+$("authform").addEventListener("submit",async function(e){
+ e.preventDefault();var em=$("em").value.trim(),pw=$("pw").value,b=$("auth-go");
+ if(!em){amsg("Informe o e-mail.");return}
+ if(mode==="signup"&&!$("nm").value.trim()){amsg("Informe como você gostaria de ser chamado.");$("nm").focus();return}
+ if(mode!=="forgot"&&pw.length<6){amsg("A senha precisa ter pelo menos 6 caracteres.");return}
+ b.disabled=true;
+ try{
+  if(mode==="login"){var r=await sb.auth.signInWithPassword({email:em,password:pw});if(r.error)throw r.error}
+  else if(mode==="signup"){var nm=$("nm").value.trim().slice(0,60);
+   var r2=await sb.auth.signUp({email:em,password:pw,options:{data:{display_name:nm}}});if(r2.error)throw r2.error;
+   var u2=r2.data&&r2.data.user;if(u2&&u2.identities&&u2.identities.length===0)throw new Error("User already registered");
+   if(!(r2.data&&r2.data.session)){var r5=await sb.auth.signInWithPassword({email:em,password:pw});
+    if(r5.error){if(/not confirmed/i.test(r5.error.message))throw new Error("CONFIRM_ON");throw r5.error}}}
+  else{var r3=await sb.auth.resetPasswordForEmail(em,{redirectTo:location.origin+location.pathname});if(r3.error)throw r3.error;amsg("Link enviado. Verifique seu e-mail.","ok")}
+ }catch(err){var m=errMsg(err);
+  if(m==="CONFIRM_ON")m="Conta criada, mas o servidor ainda exige confirmação por e-mail. O administrador precisa desativar \"Confirm email\" no painel do Supabase (Authentication → Sign In / Providers → Email).";
+  else if(/Invalid login/i.test(m))m="E-mail ou senha incorretos.";
+  else if(/not confirmed/i.test(m))m="Este e-mail ainda não foi confirmado. Peça ao administrador para liberar o acesso.";
+  else if(/already registered|already been registered/i.test(m))m="Este e-mail já tem conta. Toque em \"Já tenho conta\" e entre.";
+  else if(/at least \d+ characters|weak password|Password should/i.test(m))m="A senha precisa ter pelo menos 6 caracteres.";
+  else if(/rate limit|too many|security purposes/i.test(m))m="Muitas tentativas. Aguarde alguns minutos e tente de novo.";
+  else if(/valid email|invalid.*email|Unable to validate email/i.test(m))m="Informe um e-mail válido.";
+  else if(/Failed to fetch|NetworkError|Load failed/i.test(m))m="Sem conexão com a internet. Verifique e tente de novo.";
+  amsg(m)}
+ b.disabled=false});
+function logout(){confirmBox("Sair da conta?","Você precisará entrar de novo neste aparelho.","Sair",async function(){await sb.auth.signOut()})}
+$("btn-out-d").onclick=logout;
+
+function showAuth(){started=false;S.user=null;$("app").hidden=true;$("auth").hidden=false;closeModal()}
+async function startApp(){
+ $("auth").hidden=true;$("app").hidden=false;setWho();
+ try{await load()}catch(e){$("view").innerHTML='<div class="hint err">Não foi possível carregar os dados: '+esc(errMsg(e))+'. Confira se você executou o arquivo supabase.sql.</div>';return}
+ await loadProfile();setWho();started=true;route();if(!S.name)askName(true)}
+
+/* ---------------- perfil (nome de exibição) ---------------- */
+var metaName=function(){return((S.user&&S.user.user_metadata&&S.user.user_metadata.display_name)||"").trim()};
+async function loadProfile(){
+ S.name="";
+ try{var r=await sb.from("profiles").select("display_name").eq("user_id",S.user.id).maybeSingle();if(r.error)throw r.error;
+  S.name=((r.data&&r.data.display_name)||"").trim();
+  if(!S.name&&metaName()){S.name=metaName();var u=await sb.from("profiles").upsert({user_id:S.user.id,display_name:S.name});if(u.error)throw u.error}
+ }catch(e){S.name=S.name||metaName()}}
+function setWho(){var w=$("who");w.innerHTML=(S.name?'<b style="color:var(--ink)">'+esc(S.name)+"</b><br>":"")+esc(S.user.email);w.style.cursor="pointer";w.title="Alterar nome";w.onclick=function(){askName(false)}}
+function askName(first){
+ modal('<div class="row"><b style="font-size:1.1rem">'+(first?"Como você gostaria de ser chamado?":"Alterar nome")+'</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+"</button></div>"+
+ '<div class="mute">'+(first?"Vamos usar esse nome para te receber no app.":"Esse nome aparece na saudação do app.")+"</div>"+
+ '<div id="nm-err" class="hint err" hidden></div><div><label for="nm-i">Seu nome ou apelido</label><input id="nm-i" maxlength="60" autocomplete="nickname" value="'+esc(S.name)+'"></div>'+
+ '<button class="btn" id="nm-ok">'+ic("chk")+"Salvar</button>"+(first?'<button class="btn sec" data-close>Agora não</button>':""));
+ setTimeout(function(){var i=$("nm-i");if(i)i.focus()},50);
+ $("nm-ok").onclick=async function(){var v=$("nm-i").value.trim().slice(0,60),er=$("nm-err");
+  if(!v){er.textContent="Informe seu nome ou apelido.";er.hidden=false;return}
+  this.disabled=true;
+  try{var r=await sb.from("profiles").upsert({user_id:S.user.id,display_name:v,updated_at:new Date().toISOString()});if(r.error)throw r.error;
+   try{await sb.auth.updateUser({data:{display_name:v}})}catch(e2){}
+   S.name=v;setWho();closeModal();render();toast("Pronto, "+v+"!")}
+  catch(e){er.textContent="Não foi possível salvar: "+errMsg(e);er.hidden=false;this.disabled=false}}}
+
+/* ---------------- routing ---------------- */
+function go(v,id){location.hash="#/"+v+(id?"/"+id:"")}
+function route(){
+ if(!started)return;
+ var h=location.hash.replace(/^#\/?/,"").split("/");S.view=h[0]||"agenda";S.pid=h[1]||null;
+ if(["agenda","pacientes","paciente","historico"].indexOf(S.view)<0)S.view="agenda";
+ if((S.view==="paciente"||S.view==="historico")&&!getP(S.pid))S.view="pacientes";
+ render();$("scroll").scrollTop=0}
+window.addEventListener("hashchange",route);
+
+function render(){
+ if(!started)return;
+ var v=S.view,top=(v==="agenda"||v==="pacientes");
+ document.querySelectorAll("[data-nav]").forEach(function(b){b.classList.toggle("on",b.dataset.nav===(top?v:"pacientes"))});
+ $("fab").hidden=v!=="agenda";
+ var bell='<button class="ibtn" id="btn-bell" aria-label="Ativar avisos de lembrete">'+ic("bel")+'</button>',
+     out='<button class="ibtn mob" id="btn-out" aria-label="Sair">'+ic("out")+'</button>';
+ $("back-slot").innerHTML="";$("greet").textContent="";$("greet").onclick=null;$("greet").title="";
+ if(v==="agenda"){var hr=new Date().getHours();$("greet").textContent=S.name?"Olá, "+S.name+"! Seja bem-vindo":(hr<12?"Bom dia":hr<18?"Boa tarde":"Boa noite");$("greet").onclick=function(){askName(false)};$("greet").title="Alterar nome";$("ttl").textContent=dfull(S.day);
+  $("acts").innerHTML='<button class="btn sm desk" id="btn-new">'+ic("plus")+'Novo atendimento</button>'+bell+out;renderAgenda()}
+ else if(v==="pacientes"){$("ttl").textContent="Pacientes";$("acts").innerHTML='<button class="btn sm" id="btn-newp">'+ic("plus")+'Cadastrar</button>'+bell+out;renderList()}
+ else if(v==="paciente"){$("ttl").textContent=getP(S.pid).name;$("back-slot").innerHTML='<button class="ibtn" data-nav="pacientes" aria-label="Voltar">'+ic("chl")+'</button>';
+  $("acts").innerHTML='<button class="btn sec sm" id="btn-editp">'+ic("pen")+'Editar</button>'+out;renderPac()}
+ else{$("ttl").textContent="Histórico";$("greet").textContent=getP(S.pid).name;$("back-slot").innerHTML='<button class="ibtn" id="back-p" aria-label="Voltar">'+ic("chl")+'</button>';$("acts").innerHTML=out;renderHist()}
+ var e;
+ if(e=$("btn-new"))e.onclick=function(){apptForm(null,null)};
+ if(e=$("btn-newp"))e.onclick=function(){patForm(null)};
+ if(e=$("btn-editp"))e.onclick=function(){patForm(getP(S.pid))};
+ if(e=$("btn-out"))e.onclick=logout;
+ if(e=$("back-p"))e.onclick=function(){go("paciente",S.pid)};
+ if(e=$("btn-bell"))e.onclick=askNotif;
+}
+$("fab").onclick=function(){apptForm(null,null)};
+
+/* ---------------- agenda ---------------- */
+function renderAgenda(){
+ var f=S.cm,y=f.getFullYear(),m=f.getMonth(),ld=(f.getDay()+6)%7,dim=new Date(y,m+1,0).getDate(),tot=Math.ceil((ld+dim)/7)*7,t=todayISO(),cells="";
+ var has={};S.ap.forEach(function(a){if(a.status==="agendado"||a.status==="realizado")has[a.date]=1});
+ for(var x=0;x<tot;x++){var d=new Date(y,m,1-ld+x),i=isoOf(d);
+  cells+='<button class="cd'+(d.getMonth()!==m?" o":"")+(i===S.day?" on":"")+(i===t?" td":"")+'" data-day="'+i+'" aria-label="'+d.getDate()+" de "+MN[d.getMonth()]+'"><b>'+d.getDate()+'</b><i class="pt'+(has[i]?"":" z")+'"></i></button>'}
+ var CAL='<div class="cal"><div class="ch"><button data-cm="-1" aria-label="Mês anterior">'+ic("chl")+'</button><b>'+MN[m]+" "+y+'</b><button data-day="'+t+'" style="padding:0 10px;font-size:.75rem;font-weight:700">Hoje</button><button data-cm="1" aria-label="Próximo mês">'+ic("chr")+'</button></div><div class="cg">'+["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"].map(function(s){return"<span>"+s+"</span>"}).join("")+cells+"</div></div>";
+ var l=S.ap.filter(function(a){return a.date===S.day&&(a.status==="agendado"||a.status==="realizado")}).sort(cmpA);
+ var now=new Date(),nm=now.getHours()*60+now.getMinutes();
+ var nx=S.day===t?l.filter(function(a){return a.status==="agendado"&&mins(a.time)>=nm})[0]:null;
+ var late=S.ap.filter(function(a){return a.status==="agendado"&&a.date<t}).sort(cmpA);
+ var warn=late.length?'<button class="hint" style="border:0;width:100%;text-align:left" data-day="'+late[0].date+'">'+ic("clk")+late.length+" atendimento"+(late.length>1?"s":"")+" de dias anteriores sem baixa. Toque para revisar.</button>":"";
+ var cnt='<div class="sub"><b style="color:var(--ink)">'+(S.day===t?"Hoje, ":"")+dmy(S.day)+"</b> · "+l.length+" atendimento"+(l.length===1?"":"s")+(nx?" · próximo "+relTxt(nx.time,nm):"")+"</div>";
+ var body=l.length?l.map(function(a){
+  var p=getP(a.patient_id),isn=a===nx,dn=a.status==="realizado",od=!dn&&(a.date<t||(a.date===t&&mins(a.time)+(a.duration||50)<nm));
+  return '<div class="appt'+(isn?" next":"")+(dn?" done":"")+'"><div class="tm">'+a.time+"<span>"+a.duration+' min</span></div><button class="card" data-appt="'+a.id+'"><div class="row"><b>'+esc(p?p.name:"—")+"</b>"+(dn?'<span class="pill ok">'+ic("chk")+"Concluído</span>":isn?'<span class="pill" style="background:#fff;color:#0f766e">Próximo</span>':od?'<span class="pill amb">Pendente</span>':"")+'</div><div class="mute" style="margin:2px 0 8px">'+esc(a.kind)+(a.note?" · "+esc(a.note):"")+"</div>"+(dn?"":'<span class="bell">'+ic("bel")+"Lembrete às "+fmtMin(mins(a.time)-(a.reminder_min||30))+"</span>")+"</button>"+(dn?"":'<button class="chk" data-done="'+a.id+'" aria-label="Marcar como realizada">'+ic("chk")+"Realizada</button>")+"</div>"}).join("")
+  :'<div class="empty">'+ic("cal")+'<div style="font-weight:700;margin-top:6px">Dia livre</div>Nenhum atendimento neste dia.</div>';
+ $("view").innerHTML='<div class="agenda-grid"><div style="display:flex;flex-direction:column;gap:14px">'+CAL+'<button class="btn sec desk" id="ag-new">'+ic("plus")+"Novo atendimento neste dia</button></div><div class=\"list\">"+warn+cnt+body+"</div></div>";
+ var b=$("ag-new");if(b)b.onclick=function(){apptForm(null,null)};
+}
+function relTxt(t,nm){var d=mins(t)-nm;return d<=0?"agora":d<60?"em "+d+" min":"em "+Math.floor(d/60)+"h"+(d%60?pad(d%60):"")}
+
+/* ---------------- pacientes ---------------- */
+function renderList(){
+ var q=S.q.toLowerCase(),l=S.pts.filter(function(p){return !q||p.name.toLowerCase().indexOf(q)>=0});
+ $("view").innerHTML='<input id="pq" type="search" placeholder="Buscar paciente" value="'+esc(S.q)+'" aria-label="Buscar paciente">'+
+  (l.length?'<div class="pgrid">'+l.map(function(p){var d=okc(p.id),pc=Math.min(100,d/p.total_sessions*100),n=nextOf(p.id);
+   return '<button class="card" data-pat="'+p.id+'" style="display:flex;gap:12px;align-items:center"><div class="av">'+esc(initials(p.name))+'</div><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b><div class="mute">'+d+" de "+p.total_sessions+" sessões · "+money(p.fee)+'</div><div class="mute">'+(n?"Próximo: "+whenTxt(n):"Sem agendamento")+'</div><div class="bar" style="margin-top:8px"><i style="width:'+pc+'%"></i></div></div>'+ic("chr")+"</button>"}).join("")+"</div>"
+  :'<div class="empty">'+ic("usr")+'<div style="font-weight:700;margin-top:6px">'+(S.pts.length?"Nenhum resultado":"Nenhum paciente ainda")+"</div>"+(S.pts.length?"":"Toque em Cadastrar para começar.")+"</div>");
+ var q2=$("pq");q2.oninput=function(){S.q=q2.value;var pos=q2.selectionStart;renderList();var n=$("pq");n.focus();n.setSelectionRange(pos,pos)}}
+
+function histCard(a,p){var dn=a.status==="realizado";
+ return '<button class="card" data-appt="'+a.id+'"><div class="row"><div><b>'+(dn?"Sessão "+sessNo(a)+" de "+p.total_sessions:esc(a.kind))+'</b><div class="mute">'+dmy(a.date)+" · "+a.time+'</div></div><span class="pill '+a.status+'">'+LAB[a.status]+"</span></div>"+(a.note?'<div style="margin-top:6px;font-size:.88rem">'+esc(a.note)+"</div>":"")+"</button>"}
+
+function renderPac(){
+ var p=getP(S.pid),d=okc(p.id),L=Math.max(0,p.total_sessions-d),pct=Math.min(100,Math.round(d/p.total_sessions*100)),n=nextOf(p.id),paid=Math.round(p.fee*Math.min(d,p.total_sessions)/p.total_sessions),C=2*Math.PI*37;
+ var hist=S.ap.filter(function(a){return a.patient_id===p.id&&a.status!=="agendado"}).sort(function(a,b){return cmpA(b,a)});
+ $("view").innerHTML='<div class="pdet">'+
+ '<div class="hero"><div class="ring"><svg viewBox="0 0 92 92"><circle cx="46" cy="46" r="37" stroke="rgba(255,255,255,.2)"/><circle cx="46" cy="46" r="37" stroke="#5eead4" stroke-linecap="round" stroke-dasharray="'+(C*pct/100)+" "+C+'"/></svg><div class="c"><div>'+pct+"%<small>concluído</small></div></div></div><div style=\"flex:1;min-width:0\"><div style=\"font-size:1.3rem;font-weight:800;letter-spacing:-.02em\">"+esc(p.name)+'</div>'+(p.phone?'<div class="mute"><a href="tel:'+esc(p.phone.replace(/[^\d+]/g,""))+'" style="color:inherit">'+esc(p.phone)+"</a></div>":"")+'<div class="mute">Valor combinado</div><b style="font-size:1.15rem">'+money(p.fee)+"</b></div></div>"+
+ '<div class="stats"><div class="card"><b>'+p.total_sessions+'</b><span class="mute">Contratadas</span></div><div class="card"><b>'+d+'</b><span class="mute">Realizadas</span></div><div class="card"><b>'+L+'</b><span class="mute">Restantes</span></div></div>'+
+ '<div class="card"><div class="row"><b style="font-size:1.05rem">Sessões: '+d+"/"+p.total_sessions+"</b>"+(L?"":'<span class="pill ok">'+ic("chk")+"Sessões finalizadas</span>")+'</div><div class="bar" style="margin:8px 0"><i style="width:'+pct+'%"></i></div><div class="mute"><b>'+(L?L+(L===1?" sessão restante.":" sessões restantes."):"Nenhuma sessão restante.")+'</b></div><div class="row" style="margin-top:8px"><span class="mute">Valor das sessões realizadas</span><b>'+money(paid)+" de "+money(p.fee)+"</b></div></div>"+
+ '<div class="card"><div class="row"><div style="display:flex;gap:10px;align-items:center"><div class="av" style="width:40px;height:40px">'+ic("clk")+'</div><div><div class="mute">Próximo atendimento</div><b>'+(n?whenTxt(n):L?"Sem agendamento":"Sessões finalizadas")+"</b></div></div></div>"+
+ '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+(n?'<button class="btn sec sm" style="flex:1" data-appt="'+n.id+'">Ações / alterar</button>':"")+(L?'<button class="btn sm" style="flex:1" id="pc-new">'+ic("plus")+"Agendar</button>":"")+"</div></div>"+
+ '<div class="full" style="display:flex;flex-direction:column;gap:12px"><div class="row"><b>Últimas sessões</b><button class="back" data-hist="'+p.id+'">Ver histórico'+ic("chr")+"</button></div>"+
+ (hist.length?hist.slice(0,5).map(function(a){return histCard(a,p)}).join(""):'<div class="card mute">Nenhuma sessão registrada ainda.</div>')+
+ (p.notes?'<div class="card"><div class="mute">Observação</div><div style="white-space:pre-wrap">'+esc(p.notes)+"</div></div>":"")+
+ '<button class="btn danger" id="pc-del" style="margin-top:6px">'+ic("trs")+"Excluir paciente</button></div></div>";
+ var b=$("pc-new");if(b)b.onclick=function(){apptForm(null,p.id)};
+ $("pc-del").onclick=function(){confirmBox("Excluir "+p.name+"?","Todo o histórico e os atendimentos deste paciente serão apagados. Esta ação não pode ser desfeita.","Excluir paciente",async function(){var r=await sb.from("patients").delete().eq("id",p.id);if(r.error)throw r.error;await load();go("pacientes");toast("Paciente excluído.")})}}
+
+function renderHist(){
+ var p=getP(S.pid);
+ var l=S.ap.filter(function(a){return a.patient_id===p.id&&a.status!=="agendado"&&(S.filt==="all"||a.status===S.filt)}).sort(function(a,b){return cmpA(b,a)});
+ $("view").innerHTML='<div class="sub">'+okc(p.id)+" de "+p.total_sessions+' realizadas</div><div class="seg" id="seg">'+[["all","Todas"],["realizado","Realizadas"],["cancelado","Canceladas"],["remarcado","Remarcadas"]].map(function(x){return'<button data-f="'+x[0]+'" class="'+(S.filt===x[0]?"on":"")+'">'+x[1]+"</button>"}).join("")+"</div>"+
+ (l.length?'<div class="list">'+l.map(function(a){return'<div class="tl '+a.status+'"><div class="dt"></div><div style="flex:1;min-width:0">'+histCard(a,p)+"</div></div>"}).join("")+"</div>":'<div class="empty">Nenhuma sessão neste filtro.</div>')}
+
+/* ---------------- formulários ---------------- */
+function patForm(p){
+ var isNew=!p,d=p?okc(p.id):0;
+ modal('<div class="row"><b style="font-size:1.1rem">'+(isNew?"Cadastrar paciente":"Editar paciente")+'</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+"</button></div>"+
+ '<div id="pf-err" class="hint err" hidden></div>'+
+ '<div><label for="pf-n">Nome completo</label><input id="pf-n" autocomplete="off" placeholder="Ex.: Ana Pereira" value="'+esc(p?p.name:"")+'"></div>'+
+ '<div><label for="pf-tel">Telefone</label><input id="pf-tel" type="tel" inputmode="tel" placeholder="(32) 99999-0000" value="'+esc(p?p.phone:"")+'"></div>'+
+ (isNew?'<div class="two"><div><label for="pf-d">Data do 1º atendimento</label><input id="pf-d" type="date" value="'+isoOf(new Date(Date.now()+864e5))+'"></div><div><label for="pf-h">Horário</label><input id="pf-h" type="time" value="15:00"></div></div>'
+  :'<div><label for="pf-h">Horário padrão das sessões</label><input id="pf-h" type="time" value="'+esc(p.default_time?hm(p.default_time):"15:00")+'"><div class="mute" style="margin-top:4px">Alterar este horário atualiza os atendimentos futuros já agendados.</div></div>')+
+ '<div class="two"><div><label for="pf-v">Valor combinado (R$)</label><input id="pf-v" type="number" inputmode="decimal" min="0" step="0.01" value="'+(p?p.fee:600)+'"></div><div><label for="pf-t">Total de sessões</label><input id="pf-t" type="number" inputmode="numeric" min="1" value="'+(p?p.total_sessions:10)+'"></div></div>'+
+ (isNew?"":'<div class="mute">Sessões já realizadas: <b>'+d+"</b>. O total não pode ser menor que isso.</div>")+
+ '<div><label for="pf-o">Observação</label><textarea id="pf-o" rows="3" placeholder="Opcional">'+esc(p?p.notes:"")+"</textarea></div>"+
+ '<button class="btn" id="pf-save">'+ic("chk")+(isNew?"Salvar paciente":"Salvar alterações")+"</button>");
+ $("pf-save").onclick=async function(){
+  var er=$("pf-err"),nm=$("pf-n").value.trim(),tot=parseInt($("pf-t").value,10),fee=parseFloat($("pf-v").value)||0,hr=$("pf-h").value||"15:00";
+  function bad(t){er.textContent=t;er.hidden=false}
+  if(!nm)return bad("Informe o nome do paciente.");
+  if(!(tot>=1))return bad("Informe o total de sessões (mínimo 1).");
+  if(tot<d)return bad("O total de sessões não pode ser menor que as já realizadas ("+d+").");
+  var btn=this;btn.disabled=true;
+  try{
+   var row={name:nm,phone:$("pf-tel").value.trim(),fee:fee,total_sessions:tot,default_time:hr,notes:$("pf-o").value.trim()};
+   if(isNew){var r=await sb.from("patients").insert(row).select().single();if(r.error)throw r.error;
+    var dt=$("pf-d").value;if(dt){var r2=await sb.from("appointments").insert({patient_id:r.data.id,date:dt,time:hr,duration:50,kind:"Sessão",reminder_min:30});if(r2.error)throw r2.error;S.day=dt;S.cm=new Date(parse(dt).getFullYear(),parse(dt).getMonth(),1)}
+    await load();closeModal();go("paciente",r.data.id);toast("Paciente cadastrado.")}
+   else{var r3=await sb.from("patients").update(row).eq("id",p.id);if(r3.error)throw r3.error;
+    if(hr!==hm(p.default_time||"")){var r4=await sb.from("appointments").update({time:hr}).eq("patient_id",p.id).eq("status","agendado");if(r4.error)throw r4.error}
+    await load();closeModal();render();toast("Paciente atualizado.")}
+  }catch(e){bad("Erro ao salvar: "+errMsg(e));btn.disabled=false}}}
+
+function apptForm(a,pid){
+ var isNew=!a;if(!S.pts.length){modal('<div class="row"><b>Novo atendimento</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+'</button></div><div class="mute">Cadastre um paciente antes de criar atendimentos.</div><button class="btn" id="ap-cp">'+ic("plus")+"Cadastrar paciente</button>");$("ap-cp").onclick=function(){patForm(null)};return}
+ var sel=a?a.patient_id:(pid||(S.view==="paciente"?S.pid:S.pts[0].id)),pp=getP(sel),lead=a?(a.reminder_min||30):30;
+ var dflt=a?a.date:S.day,tm=a?a.time:(pp&&pp.default_time?hm(pp.default_time):"15:00");
+ modal('<div class="row"><b style="font-size:1.1rem">'+(isNew?"Novo atendimento":"Editar atendimento")+'</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+"</button></div>"+
+ '<div id="ap-err" class="hint err" hidden></div>'+
+ '<div><label for="ap-p">Paciente</label><select id="ap-p">'+S.pts.map(function(x){return'<option value="'+x.id+'"'+(x.id===sel?" selected":"")+">"+esc(x.name)+"</option>"}).join("")+"</select></div>"+
+ '<div class="two"><div><label for="ap-d">Data</label><input id="ap-d" type="date" value="'+dflt+'"></div><div><label for="ap-t">Horário</label><input id="ap-t" type="time" value="'+tm+'"></div></div>'+
+ '<div class="two"><div><label for="ap-du">Duração</label><select id="ap-du">'+[30,45,50,60,90].map(function(n){return"<option"+((a?a.duration:50)===n?" selected":"")+' value="'+n+'">'+n+" min</option>"}).join("")+'</select></div><div><label for="ap-k">Tipo</label><select id="ap-k">'+["Sessão","Avaliação","Retorno"].map(function(k){return"<option"+((a?a.kind:"Sessão")===k?" selected":"")+">"+k+"</option>"}).join("")+"</select></div></div>"+
+ '<div><label>Avisar com antecedência de</label><div class="chips" id="ap-chips">'+[10,30,60].map(function(m){return'<button type="button" class="chip'+(m===lead?" on":"")+'" data-m="'+m+'">'+m+" min</button>"}).join("")+"</div></div>"+
+ '<div class="hint" id="ap-hint"></div>'+
+ '<div><label for="ap-o">Observação</label><textarea id="ap-o" rows="2" placeholder="Opcional">'+esc(a?a.note:"")+"</textarea></div>"+
+ '<button class="btn" id="ap-save">'+ic("chk")+"Salvar atendimento</button>"+(isNew?"":'<button class="btn danger" id="ap-del">'+ic("trs")+"Excluir atendimento</button>"));
+ function hint(){$("ap-hint").innerHTML=ic("bel")+"Você receberá o lembrete às "+fmtMin(mins($("ap-t").value||"00:00")-lead)+" (com o site aberto)."}
+ hint();$("ap-t").oninput=hint;
+ $("ap-chips").onclick=function(e){var c=e.target.closest(".chip");if(!c)return;lead=+c.dataset.m;document.querySelectorAll("#ap-chips .chip").forEach(function(x){x.classList.toggle("on",x===c)});hint()};
+ $("ap-p").onchange=function(){var q=getP($("ap-p").value);if(isNew&&q&&q.default_time)$("ap-t").value=hm(q.default_time);hint()};
+ $("ap-save").onclick=async function(){
+  var er=$("ap-err"),d=$("ap-d").value,t=$("ap-t").value;
+  if(!d||!t){er.textContent="Informe data e horário.";er.hidden=false;return}
+  var row={patient_id:$("ap-p").value,date:d,time:t,duration:+$("ap-du").value,kind:$("ap-k").value,reminder_min:lead,note:$("ap-o").value.trim()};
+  this.disabled=true;
+  try{var r=isNew?await sb.from("appointments").insert(row):await sb.from("appointments").update(row).eq("id",a.id);if(r.error)throw r.error;
+   await load();S.day=d;S.cm=new Date(parse(d).getFullYear(),parse(d).getMonth(),1);delete S.notified[a&&a.id];closeModal();render();toast(isNew?"Atendimento salvo. Lembrete programado.":"Atendimento atualizado.")}
+  catch(e){er.textContent="Erro ao salvar: "+errMsg(e);er.hidden=false;this.disabled=false}};
+ var dl=$("ap-del");if(dl)dl.onclick=function(){delAppt(a)}}
+
+function delAppt(a){confirmBox("Excluir atendimento?","O registro será removido definitivamente, inclusive do histórico.","Excluir",async function(){var r=await sb.from("appointments").delete().eq("id",a.id);if(r.error)throw r.error;await load();render();toast("Atendimento excluído.")})}
+
+/* ---------------- ações sobre atendimento ---------------- */
+function openAppt(id){
+ var a=getA(id);if(!a)return;var p=getP(a.patient_id),ag=a.status==="agendado";
+ modal('<div class="row"><div><b style="font-size:1.1rem">'+esc(p.name)+'</b><div class="mute">'+dfull(a.date)+" · "+a.time+" · "+LAB[a.status]+'</div></div><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+"</button></div>"+
+ (a.note?'<div class="mute">'+esc(a.note)+"</div>":"")+
+ (ag?'<button class="act" data-a="ok"><span class="ic" style="background:var(--okbg);color:var(--ok)">'+ic("chk")+"</span>Marcar como realizada</button>"+
+  '<button class="act" data-a="rem"><span class="ic" style="background:var(--rembg);color:var(--rem)">'+ic("rep")+"</span>Remarcar atendimento</button>"+
+  '<button class="act" data-a="no"><span class="ic" style="background:var(--nobg);color:var(--no)">'+ic("xx")+"</span>Cancelar atendimento</button>"
+  :'<button class="act" data-a="undo"><span class="ic" style="background:var(--soft);color:var(--acc2)">'+ic("und")+"</span>Voltar para agendada</button>")+
+ '<button class="act" data-a="edit"><span class="ic" style="background:var(--soft);color:var(--acc2)">'+ic("pen")+"</span>Editar</button>"+
+ '<button class="act" data-a="del"><span class="ic" style="background:var(--nobg);color:var(--no)">'+ic("trs")+"</span>Excluir</button>");
+ $("modal").querySelector(".box").onclick=function(e){var b=e.target.closest("[data-a]");if(!b)return;var k=b.dataset.a;
+  if(k==="ok"){closeModal();markDone(id)}
+  else if(k==="edit")apptForm(a,null);
+  else if(k==="del")delAppt(a);
+  else if(k==="undo"){closeModal();run(sb.from("appointments").update({status:"agendado"}).eq("id",id),"Atendimento reaberto.")}
+  else reasonForm(a,k)}}
+
+async function markDone(id){
+ var a=getA(id),p=getP(a.patient_id);
+ if(okc(p.id)>=p.total_sessions){toast("Todas as sessões contratadas já foram realizadas. Aumente o total em Editar paciente.",4500);return}
+ var n=okc(p.id)+1;
+ var r=await run(sb.from("appointments").update({status:"realizado"}).eq("id",id));
+ if(r)toast(p.name+": sessão "+n+" de "+p.total_sessions+" registrada."+(n===p.total_sessions?" Sessões finalizadas!":""),3500)}
+
+function reasonForm(a,k){
+ var rem=k==="rem",nd=isoOf(new Date(parse(a.date).getTime()+864e5*7)),box=$("modal").querySelector(".box");
+ box.innerHTML='<div class="grip"></div><div class="row"><b style="font-size:1.1rem">'+(rem?"Remarcar atendimento":"Cancelar atendimento")+'</b><button class="ibtn" data-close aria-label="Fechar">'+ic("xx")+"</button></div><div class=\"mute\">Descreva o motivo para ficar registrado no histórico.</div>"+
+ '<div id="rs-err" class="hint err" hidden></div>'+
+ (rem?'<div class="two"><div><label for="rs-d">Nova data</label><input id="rs-d" type="date" value="'+nd+'"></div><div><label for="rs-h">Novo horário</label><input id="rs-h" type="time" value="'+a.time+'"></div></div>':"")+
+ '<div><label for="rs-m">Motivo</label><textarea id="rs-m" rows="3" placeholder="Ex.: paciente viajou, imprevisto, doença..."></textarea></div>'+
+ '<div class="chips" id="rs-q"><button type="button" class="chip" data-q="Pedido do paciente.">Pedido do paciente</button><button type="button" class="chip" data-q="Imprevisto do profissional.">Imprevisto meu</button><button type="button" class="chip" data-q="Paciente doente.">Paciente doente</button></div>'+
+ '<button class="btn" id="rs-ok">'+(rem?"Confirmar remarcação":"Confirmar cancelamento")+'</button><button class="btn sec" id="rs-back">Voltar</button>';
+ $("rs-q").onclick=function(e){var q=e.target.closest("[data-q]");if(q)$("rs-m").value=q.dataset.q};
+ $("rs-back").onclick=function(){openAppt(a.id)};
+ $("rs-ok").onclick=async function(){
+  var m=$("rs-m").value.trim(),er=$("rs-err");this.disabled=true;
+  try{
+   if(rem){var d=$("rs-d").value,t=$("rs-h").value;if(!d||!t){er.textContent="Informe nova data e horário.";er.hidden=false;this.disabled=false;return}
+    var note="Remarcada para "+dmy(d)+" às "+t+"."+(m?" Motivo: "+m:"");
+    var r1=await sb.from("appointments").insert({patient_id:a.patient_id,date:d,time:t,duration:a.duration,kind:a.kind,reminder_min:a.reminder_min,note:a.note});if(r1.error)throw r1.error;
+    var r2=await sb.from("appointments").update({status:"remarcado",note:note}).eq("id",a.id);if(r2.error)throw r2.error;
+    S.day=d;S.cm=new Date(parse(d).getFullYear(),parse(d).getMonth(),1)}
+   else{var r3=await sb.from("appointments").update({status:"cancelado",note:"Cancelada."+(m?" Motivo: "+m:"")}).eq("id",a.id);if(r3.error)throw r3.error}
+   await load();closeModal();render();toast(rem?"Atendimento remarcado.":"Atendimento cancelado.")
+  }catch(e){er.textContent="Erro: "+errMsg(e);er.hidden=false;this.disabled=false}}}
+
+/* ---------------- lembretes ---------------- */
+function askNotif(){
+ if(!("Notification" in window)){toast("Este navegador não oferece notificações. Os lembretes aparecem na tela com o site aberto.",4500);return}
+ if(Notification.permission==="granted"){toast("Avisos ativados. Eles funcionam com o site aberto.",3500);return}
+ if(Notification.permission==="denied"){toast("Notificações bloqueadas nas configurações do navegador.",4000);return}
+ Notification.requestPermission().then(function(p){toast(p==="granted"?"Avisos ativados.":"Permissão não concedida.")})}
+function checkRem(){
+ if(!started)return;var n=new Date(),t=isoOf(n),nm=n.getHours()*60+n.getMinutes();
+ S.ap.forEach(function(a){if(a.status!=="agendado"||a.date!==t)return;var st=mins(a.time),ld=a.reminder_min||30;
+  if(nm>=st-ld&&nm<st&&!S.notified[a.id]){S.notified[a.id]=1;var p=getP(a.patient_id),msg="Atendimento com "+(p?p.name:"paciente")+" às "+a.time+". Faltam "+(st-nm)+" min.";
+   toast("🔔 "+msg,8000);try{if("Notification" in window&&Notification.permission==="granted")new Notification("Minha Agenda",{body:msg})}catch(e){}}})}
+setInterval(checkRem,30000);
+setInterval(function(){if(started&&S.view==="agenda"&&!$("modal").classList.contains("on"))renderAgenda()},60000);
+document.addEventListener("visibilitychange",function(){if(!document.hidden&&started){load().then(function(){if(!$("modal").classList.contains("on"))render();checkRem()}).catch(function(){})}});
+
+/* ---------------- delegação de cliques ---------------- */
+document.addEventListener("click",function(e){
+ var t;
+ if(t=e.target.closest("[data-close]")){closeModal();return}
+ if(t=e.target.closest("[data-done]")){markDone(t.dataset.done);return}
+ if(t=e.target.closest("[data-appt]")){openAppt(t.dataset.appt);return}
+ if(t=e.target.closest("[data-cm]")){S.cm=new Date(S.cm.getFullYear(),S.cm.getMonth()+ +t.dataset.cm,1);renderAgenda();return}
+ if(t=e.target.closest("[data-day]")){S.day=t.dataset.day;var d=parse(S.day);S.cm=new Date(d.getFullYear(),d.getMonth(),1);if(S.view!=="agenda")go("agenda");else render();return}
+ if(t=e.target.closest("[data-pat]")){go("paciente",t.dataset.pat);return}
+ if(t=e.target.closest("[data-hist]")){S.filt="all";go("historico",t.dataset.hist);return}
+ if(t=e.target.closest("[data-f]")){S.filt=t.dataset.f;renderHist();return}
+ if(t=e.target.closest("[data-nav]")){go(t.dataset.nav)}
+});
+
+/* ---------------- inicialização ---------------- */
+function init(){
+ var bt=$("boot");if(bt)bt.hidden=true;
+ if(typeof supabase==="undefined"){document.body.innerHTML='<div style="padding:28px;font:16px system-ui">Não foi possível carregar a biblioteca do Supabase. Verifique sua conexão com a internet e recarregue a página.</div>';return}
+ if(SUPABASE_URL.indexOf("COLE_AQUI")>=0||SUPABASE_KEY.indexOf("COLE_AQUI")>=0){$("setup").hidden=false;return}
+ sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);authMode("login");
+ sb.auth.onAuthStateChange(function(ev,session){
+  setTimeout(function(){
+   if(ev==="PASSWORD_RECOVERY"){newPass();return}
+   if(session&&session.user){if(!S.user||S.user.id!==session.user.id){S.user=session.user;startApp()}}
+   else if(ev==="SIGNED_OUT"||ev==="INITIAL_SESSION")showAuth()},0)});
+}
+function newPass(){
+ modal('<b style="font-size:1.1rem">Definir nova senha</b><div id="np-err" class="hint err" hidden></div><div><label for="np">Nova senha</label><input id="np" type="password" autocomplete="new-password" placeholder="Mínimo 6 caracteres"></div><button class="btn" id="np-ok">Salvar senha</button>');
+ $("np-ok").onclick=async function(){var v=$("np").value;if(v.length<6){$("np-err").textContent="A senha precisa ter pelo menos 6 caracteres.";$("np-err").hidden=false;return}
+  var r=await sb.auth.updateUser({password:v});if(r.error){$("np-err").textContent=errMsg(r.error);$("np-err").hidden=false;return}closeModal();toast("Senha atualizada.")}}
+try{init()}catch(e){var bx=$("boot");if(bx){bx.hidden=false;bx.innerHTML="<b>Erro ao iniciar</b><br><small>"+esc(errMsg(e))+"</small>"}}
+})();
