@@ -7,10 +7,19 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<section class="auth-layer" id="authLayer" aria-label="Acesso à agenda">
+  <div class="auth-card">
+    <div class="auth-brand"><span class="auth-brand-icon">◷</span><div><strong>Entre sessões</strong><small>Agenda profissional</small></div></div>
+    <div class="auth-view active" id="loginView"><div class="auth-heading"><h1>Bem-vindo</h1><p>Entre para acessar sua agenda e acompanhar seus pacientes.</p></div><form id="loginForm" class="auth-form"><label for="loginEmail">E-mail</label><input id="loginEmail" name="email" type="email" autocomplete="email" placeholder="voce@exemplo.com" required /><label for="loginPassword">Senha</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Digite sua senha" required /><div class="auth-options"><label class="remember-option"><input id="rememberMe" type="checkbox" /> Lembrar de mim</label><button type="button" class="auth-link" onclick="showAuthView('forgotView')">Esqueci minha senha</button></div><button class="auth-submit" type="submit">Entrar</button></form><p class="auth-switch">Ainda não tem conta? <button class="auth-link" type="button" onclick="showAuthView('signupView')">Criar uma conta</button></p></div>
+    <div class="auth-view" id="signupView"><div class="auth-heading"><h1>Criar uma conta</h1><p>Cadastre seus dados para começar a organizar os atendimentos.</p></div><form id="signupForm" class="auth-form"><label for="signupName">Nome</label><input id="signupName" autocomplete="name" placeholder="Seu nome" required /><label for="signupEmail">E-mail</label><input id="signupEmail" type="email" autocomplete="email" placeholder="voce@exemplo.com" required /><label for="signupPassword">Senha</label><input id="signupPassword" type="password" autocomplete="new-password" minlength="6" placeholder="Mínimo de 6 caracteres" required /><label for="signupConfirm">Confirmar senha</label><input id="signupConfirm" type="password" autocomplete="new-password" minlength="6" placeholder="Digite a senha novamente" required /><p class="auth-message" id="signupMessage" role="status"></p><button class="auth-submit" type="submit">Criar conta</button></form><p class="auth-switch">Já tem uma conta? <button class="auth-link" type="button" onclick="showAuthView('loginView')">Voltar para entrar</button></p></div>
+    <div class="auth-view" id="forgotView"><div class="auth-heading"><h1>Recuperar senha</h1><p>Informe seu e-mail para solicitar a recuperação do acesso.</p></div><form id="forgotForm" class="auth-form"><label for="forgotEmail">E-mail</label><input id="forgotEmail" type="email" autocomplete="email" placeholder="voce@exemplo.com" required /><p class="auth-message" id="forgotMessage" role="status"></p><button class="auth-submit" type="submit">Enviar solicitação</button></form><p class="auth-switch"><button class="auth-link" type="button" onclick="showAuthView('loginView')">← Voltar para entrar</button></p></div>
+    <p class="auth-demo-note">Protótipo demonstrativo · autenticação e envio de e-mail ainda não conectados</p>
+  </div>
+</section>
 <div class="app">
   <header class="topbar">
     <div class="brand"><div class="brand-icon">◷</div><div><h1>Entre sessões</h1><p>Sua rotina, em boas mãos</p></div></div>
-    <div class="top-actions"><span class="today-label" id="topDate">Sexta-feira, 23 de outubro</span><div class="avatar" aria-label="Perfil">W</div></div>
+    <div class="top-actions"><span class="today-label" id="topDate">Sexta-feira, 23 de outubro</span><button class="avatar auth-avatar" aria-label="Sair da conta" onclick="logoutAuth()">W</button></div>
   </header>
 
   <main>
@@ -60,6 +69,7 @@
 <script src="app.js" defer></script>
 </body>
 </html>
+
 
 
 

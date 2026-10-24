@@ -817,3 +817,16 @@ function renderAll() {
 }
 setTopDate();
 renderAll();
+
+// Login demonstrativo, mantido separado do protótipo original.
+const AUTH_SESSION_KEY='entre-sessoes-auth-session';
+function showAuthView(viewId){document.querySelectorAll('.auth-view').forEach(view=>view.classList.toggle('active',view.id===viewId));document.querySelectorAll('.auth-message').forEach(message=>message.classList.remove('show'));}
+function startAuthSession(email,name=''){sessionStorage.setItem(AUTH_SESSION_KEY,JSON.stringify({email,name}));document.body.classList.add('authenticated');const avatar=document.querySelector('.auth-avatar');if(avatar)avatar.textContent=(name||email.split('@')[0]||'U').trim().charAt(0).toUpperCase();}
+function logoutAuth(){sessionStorage.removeItem(AUTH_SESSION_KEY);document.body.classList.remove('authenticated');showAuthView('loginView');}
+document.addEventListener('DOMContentLoaded',()=>{
+ const savedEmail=localStorage.getItem('entre-sessoes-remembered-email');if(savedEmail){document.getElementById('loginEmail').value=savedEmail;document.getElementById('rememberMe').checked=true;}
+ const activeSession=sessionStorage.getItem(AUTH_SESSION_KEY);if(activeSession){try{const user=JSON.parse(activeSession);startAuthSession(user.email,user.name||'');}catch{sessionStorage.removeItem(AUTH_SESSION_KEY);}}
+ document.getElementById('loginForm').addEventListener('submit',event=>{event.preventDefault();const email=document.getElementById('loginEmail').value.trim();const password=document.getElementById('loginPassword').value;if(!email||!password)return;if(document.getElementById('rememberMe').checked)localStorage.setItem('entre-sessoes-remembered-email',email);else localStorage.removeItem('entre-sessoes-remembered-email');startAuthSession(email);});
+ document.getElementById('signupForm').addEventListener('submit',event=>{event.preventDefault();const name=document.getElementById('signupName').value.trim();const email=document.getElementById('signupEmail').value.trim();const password=document.getElementById('signupPassword').value;const confirmation=document.getElementById('signupConfirm').value;const message=document.getElementById('signupMessage');message.classList.remove('show');if(password!==confirmation){message.textContent='As senhas não conferem.';message.classList.add('show');return;}startAuthSession(email,name);});
+ document.getElementById('forgotForm').addEventListener('submit',event=>{event.preventDefault();const message=document.getElementById('forgotMessage');message.textContent='Solicitação registrada na demonstração. O envio real de e-mail ainda não está conectado.';message.classList.add('show');});
+});
